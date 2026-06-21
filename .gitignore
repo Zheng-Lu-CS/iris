@@ -134,3 +134,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
+
+#2026.6.21
+logs/
+instructor/
