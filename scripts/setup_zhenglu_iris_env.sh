@@ -95,9 +95,7 @@ python -m pip install --upgrade \
   -i "${PYPI_MIRROR}" --trusted-host "${PYPI_TRUSTED_HOST}" \
   pip==23.0.1 setuptools==65.5.0 wheel==0.38.4
 
-torch_ready=0
-set +e
-python - <<PY
+if python - <<PY
 import sys
 try:
     import torch
@@ -112,8 +110,11 @@ print("existing torch:", torch.__version__, "torch cuda:", getattr(torch.version
 print("existing torchvision:", torchvision.__version__)
 sys.exit(0 if (torch_ok and vision_ok and cuda_ok) else 1)
 PY
-torch_ready=$?
-set -e
+then
+  torch_ready=0
+else
+  torch_ready=1
+fi
 
 if [[ "${torch_ready}" -eq 0 ]]; then
   echo "Requested H100-capable PyTorch stack is already installed; skipping PyTorch download."
@@ -125,6 +126,7 @@ else
       python -m pip install \
         --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
         --no-cache-dir \
+        -i "${PYPI_MIRROR}" --trusted-host "${PYPI_TRUSTED_HOST}" \
         "torch==${TORCH_VERSION}+${TORCH_CUDA_TAG}" \
         "torchvision==${TORCHVISION_VERSION}+${TORCH_CUDA_TAG}" \
         -f "${PYTORCH_WHEEL_INDEX}/"
