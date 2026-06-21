@@ -63,6 +63,31 @@ PYTORCH_INSTALL_SOURCE=local PYTORCH_WHEEL_DIR=/path/to/wheels bash scripts/setu
 
 Setup logs are written to `logs/env_setup/`.
 
+On headless servers, importing `cv2` from `opencv-python` can fail if system libraries such as `libGL.so.1` are missing. The setup script now checks this because IRIS imports `cv2` at training startup through `src/utils.py`. If `libGL.so.1` is missing and the fallback is enabled, it installs:
+
+```bash
+opencv-python-headless==4.8.1.78
+```
+
+To disable that fallback and require system OpenGL libraries instead:
+
+```bash
+ALLOW_OPENCV_HEADLESS_FALLBACK=0 bash scripts/setup_zhenglu_iris_env.sh
+```
+
+To force a specific OpenCV wheel:
+
+```bash
+OPENCV_PACKAGE=opencv-python bash scripts/setup_zhenglu_iris_env.sh
+OPENCV_PACKAGE=opencv-python-headless bash scripts/setup_zhenglu_iris_env.sh
+```
+
+For full non-headless OpenCV/pygame/video support, install the suggested apt packages with:
+
+```bash
+INSTALL_SYSTEM_DEPS=1 bash scripts/setup_zhenglu_iris_env.sh
+```
+
 ## Smoke Test
 
 Run a short debugging-only sanity check on one game and one visible GPU:

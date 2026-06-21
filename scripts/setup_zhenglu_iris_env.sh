@@ -14,6 +14,8 @@ PYTORCH_WHEEL_INDEX="${PYTORCH_WHEEL_INDEX:-https://mirrors.aliyun.com/pytorch-w
 PYTORCH_OFFICIAL_INDEX="https://download.pytorch.org/whl/${TORCH_CUDA_TAG}"
 PYTORCH_INSTALL_SOURCE="${PYTORCH_INSTALL_SOURCE:-mirror}"
 PYTORCH_WHEEL_DIR="${PYTORCH_WHEEL_DIR:-}"
+ALLOW_OPENCV_HEADLESS_FALLBACK="${ALLOW_OPENCV_HEADLESS_FALLBACK:-1}"
+OPENCV_PACKAGE="${OPENCV_PACKAGE:-auto}"
 PIP_TIMEOUT="${PIP_TIMEOUT:-120}"
 PIP_RETRIES="${PIP_RETRIES:-10}"
 
@@ -38,6 +40,7 @@ echo "Expected server root: ${EXPECTED_ROOT}"
 echo "Log file: ${log_file}"
 echo "PyTorch install source: ${PYTORCH_INSTALL_SOURCE}"
 echo "PyTorch wheel index: ${PYTORCH_WHEEL_INDEX}"
+echo "OpenCV headless fallback: ${ALLOW_OPENCV_HEADLESS_FALLBACK}"
 if [[ "$(pwd)" != "${EXPECTED_ROOT}" ]]; then
   echo "[WARN] current directory is not ${EXPECTED_ROOT}; continuing because the script may be inspected or staged elsewhere."
 fi
@@ -67,6 +70,23 @@ else
   echo "Skipping system package installation. To enable it, rerun with INSTALL_SYSTEM_DEPS=1."
   echo "Suggested command:"
   echo "  sudo apt-get update && sudo apt-get install -y ${apt_packages[*]}"
+fi
+
+has_runtime_library() {
+  local lib="$1"
+  command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -Fq "${lib}"
+}
+
+if [[ "${OPENCV_PACKAGE}" == "auto" ]]; then
+  if [[ "${ALLOW_OPENCV_HEADLESS_FALLBACK}" == "1" ]] && ! has_runtime_library "libGL.so.1"; then
+    OPENCV_PACKAGE="opencv-python-headless"
+    echo "libGL.so.1 is not visible via ldconfig; using ${OPENCV_PACKAGE}==4.8.1.78 for headless training startup."
+  else
+    OPENCV_PACKAGE="opencv-python"
+    echo "Using ${OPENCV_PACKAGE}==4.8.1.78."
+  fi
+else
+  echo "Using requested OpenCV package: ${OPENCV_PACKAGE}==4.8.1.78."
 fi
 
 if ! command -v conda >/dev/null 2>&1; then
@@ -164,6 +184,18 @@ else
   esac
 fi
 
+if [[ "${OPENCV_PACKAGE}" == "opencv-python-headless" || "${OPENCV_PACKAGE}" == "opencv-python" ]]; then
+  echo "Resetting OpenCV wheels before installing ${OPENCV_PACKAGE}==4.8.1.78."
+  python -m pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless || true
+  python -m pip install \
+    --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+    -i "${PYPI_MIRROR}" --trusted-host "${PYPI_TRUSTED_HOST}" \
+    --no-deps "${OPENCV_PACKAGE}==4.8.1.78"
+else
+  echo "[ERROR] OPENCV_PACKAGE must be auto, opencv-python, or opencv-python-headless; got ${OPENCV_PACKAGE}."
+  exit 1
+fi
+
 echo "Installing IRIS Python dependencies with Tsinghua PyPI mirror."
 python -m pip install \
   --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
@@ -173,7 +205,7 @@ python -m pip install \
   einops==0.3.2 \
   "gym[accept-rom-license]==0.21.0" \
   hydra-core==1.1.1 \
-  opencv-python==4.8.1.78 \
+  "${OPENCV_PACKAGE}==4.8.1.78" \
   Pillow==9.5.0 \
   "protobuf==3.20.*" \
   psutil==5.8.0 \
@@ -200,15 +232,75 @@ if [[ "${autorom_status_cli}" -ne 0 && "${autorom_status_module}" -ne 0 ]]; then
   echo "[WARN] both AutoROM invocation forms failed; check the log before running Atari training."
 fi
 
+echo "Checking OpenCV runtime import."
+if python - <<'PY'
+import cv2
+print("cv2:", cv2.__version__)
+PY
+then
+  echo "[OK] cv2 imports with ${OPENCV_PACKAGE}."
+else
+  echo "[WARN] cv2 import failed. On headless servers this is commonly caused by missing libGL.so.1."
+  if [[ "${ALLOW_OPENCV_HEADLESS_FALLBACK}" == "1" ]]; then
+    echo "Replacing opencv-python with opencv-python-headless==4.8.1.78 so IRIS can import cv2 without system OpenGL libraries."
+    python -m pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless || true
+    python -m pip install \
+      --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+      -i "${PYPI_MIRROR}" --trusted-host "${PYPI_TRUSTED_HOST}" \
+      --no-deps opencv-python-headless==4.8.1.78
+    python - <<'PY'
+import cv2
+print("cv2 headless:", cv2.__version__)
+PY
+  else
+    echo "[WARN] OpenCV headless fallback disabled. Install system package libgl1, or rerun with ALLOW_OPENCV_HEADLESS_FALLBACK=1."
+  fi
+fi
+
+check_runtime_libraries() {
+  echo
+  echo "===== runtime library precheck ====="
+  local missing=0
+  local libs=(
+    "libGL.so.1"
+    "libSM.so.6"
+    "libXrender.so.1"
+    "libfontconfig.so.1"
+    "libSDL2-2.0.so.0"
+  )
+  if ! command -v ldconfig >/dev/null 2>&1; then
+    echo "[WARN] ldconfig not found; skipping system shared-library precheck."
+    return 0
+  fi
+  for lib in "${libs[@]}"; do
+    if ldconfig -p 2>/dev/null | grep -Fq "${lib}"; then
+      echo "[OK] ${lib}"
+    else
+      echo "[MISS] ${lib}"
+      missing=1
+    fi
+  done
+  if [[ "${missing}" -ne 0 ]]; then
+    echo "[WARN] Some system runtime libraries are missing. If you want full non-headless OpenCV/pygame/video support, install:"
+    echo "  sudo apt-get update && sudo apt-get install -y ${apt_packages[*]}"
+    echo "[WARN] The script will continue and report smoke-test status instead of aborting."
+  fi
+  return 0
+}
+
+check_runtime_libraries
+
 run_diag() {
   local name="$1"
   shift
   echo
   echo "===== ${name} ====="
+  trap - ERR
   set +e
   "$@"
   local status=$?
   set -e
+  trap on_error ERR
   if [[ "${status}" -eq 0 ]]; then
     echo "[OK] ${name}"
   else
@@ -221,6 +313,7 @@ run_diag "pip check" python -m pip check
 
 run_diag "package imports and versions" python - <<'PY'
 import importlib
+import traceback
 
 modules = [
     ("torch", "torch"),
@@ -236,10 +329,19 @@ modules = [
     ("google.protobuf", "google.protobuf"),
 ]
 
+failures = []
 for label, module_name in modules:
-    module = importlib.import_module(module_name)
-    version = getattr(module, "__version__", "unknown")
-    print(f"{label}: {version}")
+    try:
+        module = importlib.import_module(module_name)
+        version = getattr(module, "__version__", "unknown")
+        print(f"{label}: {version}")
+    except Exception as exc:
+        failures.append((label, module_name, repr(exc)))
+        print(f"{label}: FAIL {exc!r}")
+        traceback.print_exc()
+
+if failures:
+    raise SystemExit(f"import failures: {failures}")
 PY
 
 if command -v nvidia-smi >/dev/null 2>&1; then
