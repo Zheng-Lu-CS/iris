@@ -37,6 +37,32 @@ INSTALL_SYSTEM_DEPS=1 bash scripts/setup_zhenglu_iris_env.sh
 
 The script writes a timestamped log under `logs/`.
 
+By default the setup script installs PyTorch from a domestic CUDA 12.1 wheel mirror:
+
+```bash
+PYTORCH_INSTALL_SOURCE=mirror bash scripts/setup_zhenglu_iris_env.sh
+```
+
+This avoids the very slow `download.pytorch.org` path that can appear on some servers. To force the official PyTorch wheel index instead:
+
+```bash
+PYTORCH_INSTALL_SOURCE=official bash scripts/setup_zhenglu_iris_env.sh
+```
+
+If PyTorch is already installed correctly in `zhenglu_iris`, the script detects it and skips the large download. If you want to manage PyTorch manually and only install/check the remaining IRIS dependencies:
+
+```bash
+PYTORCH_INSTALL_SOURCE=skip bash scripts/setup_zhenglu_iris_env.sh
+```
+
+If you already have compatible wheel files, install from a local directory:
+
+```bash
+PYTORCH_INSTALL_SOURCE=local PYTORCH_WHEEL_DIR=/path/to/wheels bash scripts/setup_zhenglu_iris_env.sh
+```
+
+Setup logs are written to `logs/env_setup/`.
+
 ## Smoke Test
 
 Run a short debugging-only sanity check on one game and one visible GPU:

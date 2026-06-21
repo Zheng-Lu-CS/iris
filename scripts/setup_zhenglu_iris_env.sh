@@ -6,10 +6,20 @@ ENV_NAME="zhenglu_iris"
 PYPI_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 PYPI_TRUSTED_HOST="pypi.tuna.tsinghua.edu.cn"
 INSTALL_SYSTEM_DEPS="${INSTALL_SYSTEM_DEPS:-0}"
+LOG_DIR="${LOG_DIR:-logs/env_setup}"
+TORCH_VERSION="${TORCH_VERSION:-2.4.1}"
+TORCHVISION_VERSION="${TORCHVISION_VERSION:-0.19.1}"
+TORCH_CUDA_TAG="${TORCH_CUDA_TAG:-cu121}"
+PYTORCH_WHEEL_INDEX="${PYTORCH_WHEEL_INDEX:-https://mirrors.aliyun.com/pytorch-wheels/${TORCH_CUDA_TAG}}"
+PYTORCH_OFFICIAL_INDEX="https://download.pytorch.org/whl/${TORCH_CUDA_TAG}"
+PYTORCH_INSTALL_SOURCE="${PYTORCH_INSTALL_SOURCE:-mirror}"
+PYTORCH_WHEEL_DIR="${PYTORCH_WHEEL_DIR:-}"
+PIP_TIMEOUT="${PIP_TIMEOUT:-120}"
+PIP_RETRIES="${PIP_RETRIES:-10}"
 
 timestamp="$(date +%Y%m%d_%H%M%S)"
-mkdir -p logs
-log_file="logs/setup_zhenglu_iris_env_${timestamp}.log"
+mkdir -p "${LOG_DIR}"
+log_file="${LOG_DIR}/setup_zhenglu_iris_env_${timestamp}.log"
 exec > >(tee -a "${log_file}") 2>&1
 
 on_error() {
@@ -26,6 +36,8 @@ echo "Timestamp: ${timestamp}"
 echo "Repo root: $(pwd)"
 echo "Expected server root: ${EXPECTED_ROOT}"
 echo "Log file: ${log_file}"
+echo "PyTorch install source: ${PYTORCH_INSTALL_SOURCE}"
+echo "PyTorch wheel index: ${PYTORCH_WHEEL_INDEX}"
 if [[ "$(pwd)" != "${EXPECTED_ROOT}" ]]; then
   echo "[WARN] current directory is not ${EXPECTED_ROOT}; continuing because the script may be inspected or staged elsewhere."
 fi
@@ -79,15 +91,80 @@ python --version
 
 echo "Pinning pip build frontend for gym==0.21 compatibility."
 python -m pip install --upgrade \
+  --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
   -i "${PYPI_MIRROR}" --trusted-host "${PYPI_TRUSTED_HOST}" \
   pip==23.0.1 setuptools==65.5.0 wheel==0.38.4
 
-echo "Installing H100-capable PyTorch stack from the official CUDA 12.1 PyTorch wheel index."
-python -m pip install torch==2.4.1 torchvision==0.19.1 \
-  --index-url https://download.pytorch.org/whl/cu121
+torch_ready=0
+set +e
+python - <<PY
+import sys
+try:
+    import torch
+    import torchvision
+except Exception as exc:
+    print(f"PyTorch import check failed: {exc!r}")
+    sys.exit(1)
+torch_ok = torch.__version__.startswith("${TORCH_VERSION}+${TORCH_CUDA_TAG}")
+vision_ok = torchvision.__version__.startswith("${TORCHVISION_VERSION}+${TORCH_CUDA_TAG}") or torchvision.__version__.startswith("${TORCHVISION_VERSION}")
+cuda_ok = getattr(torch.version, "cuda", None) == "12.1"
+print("existing torch:", torch.__version__, "torch cuda:", getattr(torch.version, "cuda", None))
+print("existing torchvision:", torchvision.__version__)
+sys.exit(0 if (torch_ok and vision_ok and cuda_ok) else 1)
+PY
+torch_ready=$?
+set -e
+
+if [[ "${torch_ready}" -eq 0 ]]; then
+  echo "Requested H100-capable PyTorch stack is already installed; skipping PyTorch download."
+else
+  echo "Installing H100-capable PyTorch stack."
+  echo "Default source is a domestic PyTorch wheel mirror to avoid very slow download.pytorch.org transfers."
+  case "${PYTORCH_INSTALL_SOURCE}" in
+    mirror)
+      python -m pip install \
+        --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+        --no-cache-dir \
+        "torch==${TORCH_VERSION}+${TORCH_CUDA_TAG}" \
+        "torchvision==${TORCHVISION_VERSION}+${TORCH_CUDA_TAG}" \
+        -f "${PYTORCH_WHEEL_INDEX}/"
+      ;;
+    official)
+      python -m pip install \
+        --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+        --no-cache-dir \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+        --index-url "${PYTORCH_OFFICIAL_INDEX}"
+      ;;
+    conda)
+      conda install -y \
+        "pytorch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" pytorch-cuda=12.1 \
+        -c pytorch -c nvidia
+      ;;
+    local)
+      if [[ -z "${PYTORCH_WHEEL_DIR}" || ! -d "${PYTORCH_WHEEL_DIR}" ]]; then
+        echo "[ERROR] PYTORCH_INSTALL_SOURCE=local requires PYTORCH_WHEEL_DIR to point to a directory containing torch/torchvision wheels."
+        exit 1
+      fi
+      python -m pip install \
+        --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
+        --no-index --find-links "${PYTORCH_WHEEL_DIR}" \
+        "torch==${TORCH_VERSION}+${TORCH_CUDA_TAG}" \
+        "torchvision==${TORCHVISION_VERSION}+${TORCH_CUDA_TAG}"
+      ;;
+    skip)
+      echo "PYTORCH_INSTALL_SOURCE=skip set; skipping PyTorch installation."
+      ;;
+    *)
+      echo "[ERROR] unknown PYTORCH_INSTALL_SOURCE=${PYTORCH_INSTALL_SOURCE}; use mirror, official, conda, local, or skip."
+      exit 1
+      ;;
+  esac
+fi
 
 echo "Installing IRIS Python dependencies with Tsinghua PyPI mirror."
 python -m pip install \
+  --timeout "${PIP_TIMEOUT}" --retries "${PIP_RETRIES}" \
   -i "${PYPI_MIRROR}" --trusted-host "${PYPI_TRUSTED_HOST}" \
   numpy==1.23.5 \
   ale-py==0.7.4 \
