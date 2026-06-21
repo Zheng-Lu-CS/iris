@@ -184,12 +184,16 @@ python -m pip install \
   "AutoROM[accept-rom-license]==0.4.2"
 
 echo "Attempting Atari ROM installation. Missing command/module variants are non-fatal."
-set +e
-AutoROM --accept-license
-autorom_status_cli=$?
-python -m autorom --accept-license
-autorom_status_module=$?
-set -e
+if AutoROM --accept-license; then
+  autorom_status_cli=0
+else
+  autorom_status_cli=$?
+fi
+if python -m autorom --accept-license; then
+  autorom_status_module=0
+else
+  autorom_status_module=$?
+fi
 echo "AutoROM command status: ${autorom_status_cli}"
 echo "python -m autorom status: ${autorom_status_module}"
 if [[ "${autorom_status_cli}" -ne 0 && "${autorom_status_module}" -ne 0 ]]; then
